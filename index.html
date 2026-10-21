@@ -142,7 +142,7 @@ const cfg = {
   provider: localStorage.getItem('frida_provider') || 'groq',
   llmKey: localStorage.getItem('frida_key') || '',
   model: localStorage.getItem('frida_model') || '',
-   url: localStorage.getItem('frida_url') || '',
+         url: localStorage.getItem('frida_url') || '',
   tomtom: localStorage.getItem('frida_tomtom') || '',
   persona: localStorage.getItem('frida_persona') || '',
   memory: JSON.parse(localStorage.getItem('frida_memory') || '[]'),
@@ -451,7 +451,7 @@ async function weather(){
   }catch(e){
     addMsg('bot','No pude obtener tu ubicación. Activá el GPS y el permiso de ubicación para decirte el clima.');
   }
-   }
+}
  // ============ TRÁNSITO (TomTom, requiere clave gratis) ============
 async function traffic(){
   if(!cfg.tomtom) return addMsg('bot','Para el tránsito necesito una clave de TomTom, es gratis: entra a developer.tomtom.com, crea una cuenta y pegala en Configuración.');
