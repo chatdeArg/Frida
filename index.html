@@ -61,6 +61,7 @@
   #modal h2 { color:#6ec6ff; font-size:1.05rem; margin-bottom:12px; }
   #modal label { display:block; font-size:.85rem; color:#9fb8d8; margin:12px 0 4px; }
   #modal select { width:100%; background:#0a0e1a; border:1px solid #2a3a5f; border-radius:10px; padding:10px 12px; color:#e8f0ff; font-size:.9rem; }
+  #modal textarea { width:100%; background:#0a0e1a; border:1px solid #2a3a5f; border-radius:10px; padding:10px 12px; color:#e8f0ff; font-size:.9rem; font-family:inherit; resize:vertical; }
   #modal input { width:100%; background:#0a0e1a; border:1px solid #2a3a5f; border-radius:10px; padding:10px 12px; color:#e8f0ff; font-size:.9rem; }
   #modal p { font-size:.8rem; color:#5f7ba6; margin-top:4px; line-height:1.4; }
   #modal .save { margin-top:18px; width:100%; padding:12px; border:none; border-radius:12px; background:#38b6ff; color:#04203a; font-weight:700; font-size:1rem; cursor:pointer; }
@@ -69,6 +70,7 @@
 <body>
 <header>
   <h1>◉ FRIDA</h1>
+  <button id="installBtn" style="display:none" onclick="installApp()">📲 Instalar</button>
   <button onclick="document.getElementById('modal').classList.add('open')">⚙️ Config</button>
 </header>
 
@@ -102,6 +104,9 @@
       <label>URL base (solo para "Otro")</label>
       <input id="cfgUrl" type="text" placeholder="https://api.ejemplo.com/v1">
     </div>
+    <label>Personalidad / instrucciones (opcional)</label>
+    <textarea id="cfgPersona" rows="3" placeholder="Ej: Sos divertida y usá emojis. Llamá jefe al usuario."></textarea>
+    <p>Esto le cambia el carácter a Frida en todas sus respuestas.</p>
     <p>Sin clave, uso mi base de conocimiento local: clima, tránsito, matemáticas y temas de colegio.</p>
     <label>Clave de TomTom (opcional, para tránsito)</label>
     <input id="cfgTomTom" type="password" placeholder="Gratis en developer.tomtom.com">
@@ -137,13 +142,22 @@ const cfg = {
   provider: localStorage.getItem('frida_provider') || 'groq',
   llmKey: localStorage.getItem('frida_key') || '',
   model: localStorage.getItem('frida_model') || '',
-  url: localStorage.getItem('frida_url') || '',
+   url: localStorage.getItem('frida_url') || '',
   tomtom: localStorage.getItem('frida_tomtom') || '',
+  persona: localStorage.getItem('frida_persona') || '',
+  memory: JSON.parse(localStorage.getItem('frida_memory') || '[]'),
 };
+function buildSystemPrompt(){
+  let p = SYSTEM_PROMPT;
+  if(cfg.persona) p += '\n\nPersonalidad e instrucciones del usuario: ' + cfg.persona;
+  if(cfg.memory.length) p += '\n\nCosas que el usuario te pidió recordar: ' + cfg.memory.join('. ');
+  return p;
+}
 document.getElementById('cfgProvider').value = cfg.provider;
 document.getElementById('cfgKey').value = cfg.llmKey;
 document.getElementById('cfgTomTom').value = cfg.tomtom;
 document.getElementById('cfgUrl').value = cfg.url;
+document.getElementById('cfgPersona').value = cfg.persona;
 
 function updateModels(){
   const prov = document.getElementById('cfgProvider').value;
@@ -164,15 +178,18 @@ function saveConfig(){
   cfg.model = document.getElementById('cfgModel').value;
   cfg.url = document.getElementById('cfgUrl').value.trim();
   cfg.tomtom = document.getElementById('cfgTomTom').value.trim();
+  cfg.persona = document.getElementById('cfgPersona').value.trim();
   localStorage.setItem('frida_provider', cfg.provider);
   localStorage.setItem('frida_key', cfg.llmKey);
   localStorage.setItem('frida_model', cfg.model);
   localStorage.setItem('frida_url', cfg.url);
   localStorage.setItem('frida_tomtom', cfg.tomtom);
+  localStorage.setItem('frida_persona', cfg.persona);
   document.getElementById('modal').classList.remove('open');
   addMsg('bot','Listo, configuración guardada.');
 }
- // ============ VOZ: SÍNTESIS ============
+
+// ============ VOZ: SÍNTESIS ============
 let voice = null;
 function pickVoice(){
   const vs = speechSynthesis.getVoices().filter(v=>v.lang.startsWith('es'));
@@ -225,6 +242,25 @@ document.getElementById('textInput').addEventListener('keydown', e=>{
 
 // ============ ARCHIVOS: CÁMARA / IMÁGENES / PDF ============
 const fileBtn = document.getElementById('fileBtn'), fileInput = document.getElementById('fileInput');
+let lastImage = null;
+
+// ============ INSTALACIÓN PWA ============
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredPrompt = e;
+  document.getElementById('installBtn').style.display = 'inline-block';
+});
+async function installApp(){
+  if(deferredPrompt){
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    document.getElementById('installBtn').style.display = 'none';
+  } else {
+    addMsg('bot','Si no ves el aviso, usá el menú de Chrome: Agregar a pantalla de inicio.');
+  }
+}
 fileBtn.onclick = () => fileInput.click();
 fileInput.onchange = async e => {
   const file = e.target.files[0];
@@ -255,6 +291,7 @@ async function processImage(file){
   status('Procesando imagen...');
   const dataUrl = await new Promise(res=>{ const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file); });
   showFilePreview(file, dataUrl);
+  lastImage = {dataUrl: dataUrl, type: file.type};
   if(cfg.provider === 'gemini' && cfg.llmKey){
     try{
       const base64 = dataUrl.split(',')[1];
@@ -262,7 +299,7 @@ async function processImage(file){
       const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${cfg.llmKey}`,{
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ contents:[{parts:[
-          {text: SYSTEM_PROMPT + '\n\nEl usuario te envió una imagen. Describila brevemente en español, como contándosela a alguien en voz alta.'},
+          {text: buildSystemPrompt() + '\n\nEl usuario te envió una imagen. Describila brevemente en español, como contándosela a alguien en voz alta.'},
           {inline_data:{mime_type:file.type, data:base64}}
         ]}]})
       });
@@ -332,7 +369,7 @@ async function handle(raw){
   if(BASE[q] === null || /\bque hora\b/.test(q))
     return addMsg('bot','Son las ' + new Date().toLocaleTimeString('es-419',{hour:'numeric',minute:'2-digit'}) + '.');
 
-  // Mate
+  // Mate: "cuánto es 12*8+4" o "calcula ..."
   const calcMatch = q.match(/([\d][\d\s\+\-\*\/\(\)\.,]*[\d]|\d)/);
   if(/(cuanto es|cuánto es|calcula|cuanto da|suma|resta|multiplica|divide)/.test(q) && calcMatch){
     const expr = calcMatch[1].replace(',', '.').replace(/[^\d\+\-\*\/\(\)\. ]/g,'').trim();
@@ -344,7 +381,7 @@ async function handle(raw){
     }
   }
 
-  // Clima
+  // Clima (open-meteo, gratis, sin clave)
   if(/\b(clima|tiempo|temperatura|lluvia|weather)\b/.test(q)) return weather();
 
   // Tránsito
@@ -364,10 +401,34 @@ async function handle(raw){
   }
   if(/gracias/.test(q)) return addMsg('bot','De nada. Estoy para ayudarte.');
 
-  // Imágenes generadas
+  // Imágenes: "dibujá X", "crea una imagen de X", "genera una foto de X"
   const imgMatch = q.match(/(?:dibuja|dibuja me|crea|genera|hace|haz|mostra|mostrame)\s+(?:una\s+)?(?:imagen|foto|dibujo|ilustracion)\s+(?:de\s+)?(.+)/) || q.match(/^imagen de (.+)/);
   if(imgMatch && imgMatch[1] && imgMatch[1].trim().length > 2){
     return drawImage(imgMatch[1].trim());
+  }
+
+  // Editar última imagen: "editá la imagen: ponele un fondo rojo"
+  const editMatch = q.match(/(?:edita|editala|modifica|transforma|cambia)\b[^:]*:?\s*(.+)/);
+  if(editMatch && editMatch[1] && editMatch[1].trim().length > 2 && /(imagen|foto|edit|transform)/.test(q)){
+    if(lastImage) return editImage(editMatch[1].trim());
+    return addMsg('bot','No tengo ninguna imagen para editar. Primero mandame una foto con el botón 📎.');
+  }
+
+  // Memoria: "recordá que..."
+  const recMatch = q.match(/(?:recorda|acordate|acuerdate|guarda|anota|aprende)\s+(?:que\s+)?(.+)/);
+  if(recMatch && recMatch[1] && recMatch[1].trim().length > 2){
+    cfg.memory.push(recMatch[1].trim());
+    localStorage.setItem('frida_memory', JSON.stringify(cfg.memory));
+    return addMsg('bot','Listo, lo guardé en mi memoria. Te lo voy a recordar siempre.');
+  }
+  if(/(que recuerdas|que memorizaste|que sabes de mi|mi memoria)/.test(q)){
+    if(!cfg.memory.length) return addMsg('bot','Todavía no guardé nada. Decime "recordá que..." seguido de lo que quieras que no olvide.');
+    return addMsg('bot','Esto es lo que tengo guardado: ' + cfg.memory.join('. ') + '.');
+  }
+  if(/(olvidate todo|borra tu memoria|olvida todo)/.test(q)){
+    cfg.memory = [];
+    localStorage.setItem('frida_memory', '[]');
+    return addMsg('bot','Memoria borrada. Arrancamos de cero.');
   }
 
   // Fallback: LLM si hay clave
@@ -390,9 +451,8 @@ async function weather(){
   }catch(e){
     addMsg('bot','No pude obtener tu ubicación. Activá el GPS y el permiso de ubicación para decirte el clima.');
   }
-}
-
-// ============ TRÁNSITO (TomTom) ============
+   }
+ // ============ TRÁNSITO (TomTom, requiere clave gratis) ============
 async function traffic(){
   if(!cfg.tomtom) return addMsg('bot','Para el tránsito necesito una clave de TomTom, es gratis: entra a developer.tomtom.com, crea una cuenta y pegala en Configuración.');
   status('Consultando tránsito...');
@@ -410,7 +470,7 @@ async function traffic(){
   }catch(e){ addMsg('bot','No pude consultar el tránsito. Verificá tu clave de TomTom y el GPS.'); }
 }
 
-// ============ IMÁGENES (Pollinations, gratis) ============
+// ============ IMÁGENES (Pollinations, gratis, sin clave) ============
 function drawImage(prompt){
   status('Dibujando...');
   const url = 'https://image.pollinations.ai/prompt/' + encodeURIComponent('imagen de ' + prompt) + '?width=768&height=768&nologo=true&seed=' + Math.floor(Math.random()*99999);
@@ -427,8 +487,68 @@ function drawImage(prompt){
   div.appendChild(img); div.appendChild(caption);
   chat.appendChild(div); chat.scrollTop = chat.scrollHeight;
   speak('Acá tenés tu imagen de ' + prompt + '.');
- }
- // ============ LLM multi-proveedor ============
+}
+
+// ============ EDITAR IMÁGENES ============
+async function editImage(instruction){
+  status('Editando imagen...');
+  if(cfg.provider === 'gemini' && cfg.llmKey){
+    try{
+      const base64 = lastImage.dataUrl.split(',')[1];
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-preview-image-generation:generateContent?key=${cfg.llmKey}`,{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          contents:[{parts:[
+            {text:'Editá esta imagen: ' + instruction},
+            {inline_data:{mime_type:lastImage.type, data:base64}}
+          ]}],
+          generationConfig:{responseModalities:['IMAGE']}
+        })
+      });
+      const d = await r.json();
+      if(d.error) throw new Error(d.error.message);
+      const part = d.candidates[0].content.parts.find(p=>p.inlineData || p.inline_data);
+      if(!part) return addMsg('bot','No pude generar la imagen editada. Probá con otra instrucción.');
+      const b64 = (part.inlineData||part.inline_data).data;
+      const editedUrl = 'data:image/png;base64,' + b64;
+      lastImage = {dataUrl: editedUrl, type:'image/png'};
+      return showEditedImage(editedUrl, instruction);
+    }catch(err){
+      return addMsg('bot','Gemini no pudo editar: ' + err.message);
+    }
+  }
+  try{
+    const r = await fetch('https://image.pollinations.ai/prompt/' + encodeURIComponent(instruction), {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({prompt: instruction, image: lastImage.dataUrl})
+    });
+    if(!r.ok) throw new Error('sin respuesta');
+    const blob = await r.blob();
+    const editedUrl = await new Promise(res=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result); fr.readAsDataURL(blob); });
+    lastImage = {dataUrl: editedUrl, type: blob.type || 'image/png'};
+    showEditedImage(editedUrl, instruction);
+  }catch(e){
+    addMsg('bot','No pude editar la imagen. Para edición con IA de verdad, configurá tu clave de Gemini gratis en ⚙️ Config.');
+  }
+}
+
+function showEditedImage(url, instruction){
+  const div = document.createElement('div');
+  div.className = 'msg bot';
+  div.style.padding = '8px';
+  const img = document.createElement('img');
+  img.src = url; img.style.cssText = 'max-width:100%; border-radius:12px; display:block;';
+  const cap = document.createElement('div');
+  cap.textContent = '✏️ ' + instruction;
+  cap.style.cssText = 'font-size:.8rem; color:#9fb8d8; margin-top:6px;';
+  div.appendChild(img); div.appendChild(cap);
+  chat.appendChild(div); chat.scrollTop = chat.scrollHeight;
+  status('Tocá el micrófono y hablame');
+  speak('Listo, ahí tenés la imagen editada.');
+}
+
+// ============ LLM multi-proveedor ============
 const SYSTEM_PROMPT = 'Sos Frida, una asistente de voz en español latinoamericano, amable y clara. Respondé en 2 o 3 oraciones cortas, ideal para ser leída en voz alta.';
 
 async function askLLM(text){
@@ -439,18 +559,19 @@ async function askLLM(text){
       const model = cfg.model || PROVIDERS.gemini.models[0];
       const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${cfg.llmKey}`,{
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ contents:[{parts:[{text: SYSTEM_PROMPT + '\n\nPregunta: ' + text}]}] })
+        body: JSON.stringify({ contents:[{parts:[{text: buildSystemPrompt() + '\n\nPregunta: ' + text}]}] })
       });
       const d = await r.json();
       if(d.error) return addMsg('bot','Error de Gemini: ' + d.error.message);
       return addMsg('bot', d.candidates[0].content.parts[0].text.trim());
     }
+    // OpenAI-compatible (Groq, OpenRouter, custom)
     const url = prov === 'custom' ? (cfg.url || '').replace(/\/$/,'') + '/chat/completions' : PROVIDERS[prov].url;
     const r = await fetch(url,{
       method:'POST',
       headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+cfg.llmKey },
       body: JSON.stringify({ model: cfg.model || PROVIDERS[prov].models[0], messages:[
-        {role:'system', content: SYSTEM_PROMPT},
+        {role:'system', content: buildSystemPrompt()},
         {role:'user', content:text}
       ], max_tokens:250 })
     });
