@@ -6,6 +6,8 @@
 <meta name="theme-color" content="#0a0e1a">
 <title>Frida — Asistente de Voz</title>
 <link rel="icon" href="icon.svg" type="image/svg+xml">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>if(window.pdfjsLib){ pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; }</script>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   body {
@@ -17,7 +19,6 @@
   header { padding:16px; display:flex; align-items:center; justify-content:space-between; }
   header h1 { font-size:1.1rem; letter-spacing:3px; color:#6ec6ff; font-weight:600; }
   header button { background:none; border:1px solid #2a3a5f; color:#9fb8d8; border-radius:10px; padding:6px 12px; font-size:1rem; cursor:pointer; }
-  /* Reactor */
   #reactor { width:150px; height:150px; margin:12px auto; position:relative; }
   #reactor .core {
     position:absolute; inset:35px; border-radius:50%;
@@ -31,13 +32,11 @@
   #reactor .ring::before { content:''; position:absolute; top:-4px; left:50%; width:8px; height:8px; background:#6ec6ff; border-radius:50%; box-shadow:0 0 10px #6ec6ff; }
   @keyframes pulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.06)} }
   @keyframes spin { to{transform:rotate(360deg)} }
-  /* Chat */
   #chat { flex:1; overflow-y:auto; padding:12px 16px; display:flex; flex-direction:column; gap:10px; }
   .msg { max-width:82%; padding:10px 14px; border-radius:16px; line-height:1.45; font-size:.95rem; animation:fade .3s; }
   @keyframes fade { from{opacity:0; transform:translateY(8px)} to{opacity:1} }
   .msg.user { align-self:flex-end; background:#1d3a6b; border-bottom-right-radius:4px; }
   .msg.bot { align-self:flex-start; background:#14213d; border:1px solid #22355c; border-bottom-left-radius:4px; }
-  /* Controls */
   #controls { padding:14px 16px calc(14px + env(safe-area-inset-bottom)); display:flex; gap:10px; }
   #textInput {
     flex:1; background:#111a30; border:1px solid #2a3a5f; border-radius:24px;
@@ -49,8 +48,13 @@
     box-shadow:0 0 18px rgba(56,182,255,.5); transition:transform .15s;
   }
   #micBtn:active { transform:scale(.9); }
+  #fileBtn {
+    width:52px; height:52px; border-radius:50%; border:none; cursor:pointer;
+    background:linear-gradient(145deg,#2a3a5f,#16213e); font-size:1.3rem;
+    border:1px solid #2a3a5f; transition:transform .15s;
+  }
+  #fileBtn:active { transform:scale(.9); }
   #status { text-align:center; font-size:.78rem; color:#5f7ba6; padding:0 16px 6px; min-height:1.2em; }
-  /* Modal */
   #modal { display:none; position:fixed; inset:0; background:rgba(4,8,18,.85); z-index:10; padding:24px; overflow-y:auto; }
   #modal.open { display:block; }
   #modal .card { background:#111a30; border:1px solid #2a3a5f; border-radius:16px; padding:20px; max-width:480px; margin:20px auto; }
@@ -73,6 +77,8 @@
 <div id="chat"></div>
 
 <div id="controls">
+  <button id="fileBtn" title="Foto o archivo">📎</button>
+  <input id="fileInput" type="file" accept="image/*,application/pdf" style="display:none">
   <input id="textInput" type="text" placeholder="Escribí o hablá..." autocomplete="off">
   <button id="micBtn" title="Hablar">🎙️</button>
 </div>
@@ -104,7 +110,7 @@
 </div>
 
 <script>
-// ============ CONFIGURACIÓN ============
+// ============ ESTADO ============
 const PROVIDERS = {
   groq: {
     url: 'https://api.groq.com/openai/v1/chat/completions',
@@ -166,8 +172,7 @@ function saveConfig(){
   document.getElementById('modal').classList.remove('open');
   addMsg('bot','Listo, configuración guardada.');
 }
-
-// ============ VOZ: SÍNTESIS ============
+ // ============ VOZ: SÍNTESIS ============
 let voice = null;
 function pickVoice(){
   const vs = speechSynthesis.getVoices().filter(v=>v.lang.startsWith('es'));
@@ -218,7 +223,83 @@ document.getElementById('textInput').addEventListener('keydown', e=>{
   if(e.key==='Enter' && e.target.value.trim()){ handle(e.target.value.trim()); e.target.value=''; }
 });
 
-// ============ MOTOR DE RESPUESTAS ============
+// ============ ARCHIVOS: CÁMARA / IMÁGENES / PDF ============
+const fileBtn = document.getElementById('fileBtn'), fileInput = document.getElementById('fileInput');
+fileBtn.onclick = () => fileInput.click();
+fileInput.onchange = async e => {
+  const file = e.target.files[0];
+  fileInput.value = '';
+  if(!file) return;
+  if(file.type.startsWith('image/')) return processImage(file);
+  if(file.type === 'application/pdf') return processPDF(file);
+  addMsg('bot','Solo puedo procesar imágenes y archivos PDF.');
+};
+
+function showFilePreview(file, url){
+  const div = document.createElement('div');
+  div.className = 'msg user';
+  div.style.padding = '8px';
+  if(url && file.type.startsWith('image/')){
+    const img = document.createElement('img');
+    img.src = url; img.style.cssText = 'max-width:100%; border-radius:12px; display:block;';
+    div.appendChild(img);
+  }
+  const cap = document.createElement('div');
+  cap.textContent = '📎 ' + file.name;
+  cap.style.cssText = 'font-size:.8rem; margin-top:6px; opacity:.8;';
+  div.appendChild(cap);
+  chat.appendChild(div); chat.scrollTop = chat.scrollHeight;
+}
+
+async function processImage(file){
+  status('Procesando imagen...');
+  const dataUrl = await new Promise(res=>{ const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file); });
+  showFilePreview(file, dataUrl);
+  if(cfg.provider === 'gemini' && cfg.llmKey){
+    try{
+      const base64 = dataUrl.split(',')[1];
+      const model = cfg.model || PROVIDERS.gemini.models[0];
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${cfg.llmKey}`,{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ contents:[{parts:[
+          {text: SYSTEM_PROMPT + '\n\nEl usuario te envió una imagen. Describila brevemente en español, como contándosela a alguien en voz alta.'},
+          {inline_data:{mime_type:file.type, data:base64}}
+        ]}]})
+      });
+      const d = await r.json();
+      if(d.error) return addMsg('bot','Error de Gemini: ' + d.error.message);
+      status('Tocá el micrófono y hablame');
+      return addMsg('bot', d.candidates[0].content.parts[0].text.trim());
+    }catch(err){ return addMsg('bot','Error al analizar la imagen. Revisá tu conexión.'); }
+  }
+  addMsg('bot','Recibí tu imagen. Para analizarla y contarte qué contiene, configurá una clave de Gemini gratis en ⚙️ Config.');
+}
+
+async function processPDF(file){
+  status('Leyendo PDF...');
+  if(typeof pdfjsLib === 'undefined'){
+    return addMsg('bot','No pude cargar el lector de PDF. Revisá tu conexión a internet e intentá de nuevo.');
+  }
+  try{
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({data:buf}).promise;
+    let text = '';
+    for(let i=1; i<=Math.min(pdf.numPages, 10); i++){
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      text += content.items.map(it=>it.str).join(' ') + '\n';
+    }
+    text = text.trim();
+    showFilePreview(file, null);
+    if(!text) return addMsg('bot','Este PDF parece tener solo imágenes escaneadas, sin texto seleccionable. Probá enviando una foto de las páginas con el botón 📎.');
+    if(cfg.llmKey){
+      status('Resumiendo PDF...');
+      return askLLM('Te paso el texto de un PDF llamado "' + file.name + '". Haceme un resumen corto en español, máximo 5 oraciones, como contándomelo en voz alta. Después contame en una oración de qué trata en general.\n\n' + text.slice(0, 12000));
+    }
+    addMsg('bot', 'Leí tu PDF: "' + file.name + '" (' + pdf.numPages + ' páginas). Acá va un fragmento:\n\n' + text.slice(0,600) + (text.length>600?'\n\n[...]':''));
+  }catch(err){ addMsg('bot','No pude leer ese PDF. Probá con otro archivo.'); }
+ }
+ // ============ MOTOR DE RESPUESTAS ============
 const norm = s => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
 
 const BASE = {
@@ -245,13 +326,13 @@ async function handle(raw){
 
   // Saludos
   if(/^(hola|buenas|hey|buenos dias|buenas tardes|buenas noches)/.test(q))
-    return addMsg('bot','Hola. Soy Frida. Preguntame sobre tareas del colegio, el clima, tránsito, o pedime una cuenta de matemática.');
+    return addMsg('bot','Hola. Soy Frida. Preguntame sobre tareas del colegio, el clima, tránsito, pedime cuentas de matemática, o decime \'dibujá\' algo.');
 
   // Hora
   if(BASE[q] === null || /\bque hora\b/.test(q))
     return addMsg('bot','Son las ' + new Date().toLocaleTimeString('es-419',{hour:'numeric',minute:'2-digit'}) + '.');
 
-  // Mate: "cuánto es 12*8+4" o "calcula ..."
+  // Mate
   const calcMatch = q.match(/([\d][\d\s\+\-\*\/\(\)\.,]*[\d]|\d)/);
   if(/(cuanto es|cuánto es|calcula|cuanto da|suma|resta|multiplica|divide)/.test(q) && calcMatch){
     const expr = calcMatch[1].replace(',', '.').replace(/[^\d\+\-\*\/\(\)\. ]/g,'').trim();
@@ -263,11 +344,11 @@ async function handle(raw){
     }
   }
 
-  // Clima (open-meteo, gratis, sin clave)
+  // Clima
   if(/\b(clima|tiempo|temperatura|lluvia|weather)\b/.test(q)) return weather();
 
   // Tránsito
-  if(/\b(transito|trafico|accidente|camino|ruta)\b/.test(q)) return traffic();
+  if(/\b(transito|trafico|tráfico|accidente|camino|ruta)\b/.test(q)) return traffic();
 
   // Chiste
   if(/chiste|broma/.test(q)){
@@ -283,9 +364,15 @@ async function handle(raw){
   }
   if(/gracias/.test(q)) return addMsg('bot','De nada. Estoy para ayudarte.');
 
+  // Imágenes generadas
+  const imgMatch = q.match(/(?:dibuja|dibuja me|crea|genera|hace|haz|mostra|mostrame)\s+(?:una\s+)?(?:imagen|foto|dibujo|ilustracion)\s+(?:de\s+)?(.+)/) || q.match(/^imagen de (.+)/);
+  if(imgMatch && imgMatch[1] && imgMatch[1].trim().length > 2){
+    return drawImage(imgMatch[1].trim());
+  }
+
   // Fallback: LLM si hay clave
   if(cfg.llmKey) return askLLM(text);
-  addMsg('bot','Todavía no sé sobre ese tema. Configurá una IA gratis en ⚙️ (Groq o Gemini) para que responda cualquier cosa. También puedo decirte el clima, el tránsito, y resolver cuentas de matemática.');
+  addMsg('bot','Todavía no sé sobre ese tema. Configurá una IA gratis en ⚙️ (Groq o Gemini) para que responda cualquier cosa. También puedo decirte el clima, el tránsito, resolver cuentas, dibujar imágenes, y analizar fotos o PDF que me mandes con el botón de adjuntar.');
 }
 
 // ============ CLIMA (Open-Meteo, gratis) ============
@@ -305,7 +392,7 @@ async function weather(){
   }
 }
 
-// ============ TRÁNSITO (TomTom, requiere clave gratis) ============
+// ============ TRÁNSITO (TomTom) ============
 async function traffic(){
   if(!cfg.tomtom) return addMsg('bot','Para el tránsito necesito una clave de TomTom, es gratis: entra a developer.tomtom.com, crea una cuenta y pegala en Configuración.');
   status('Consultando tránsito...');
@@ -323,7 +410,25 @@ async function traffic(){
   }catch(e){ addMsg('bot','No pude consultar el tránsito. Verificá tu clave de TomTom y el GPS.'); }
 }
 
-// ============ LLM multi-proveedor ============
+// ============ IMÁGENES (Pollinations, gratis) ============
+function drawImage(prompt){
+  status('Dibujando...');
+  const url = 'https://image.pollinations.ai/prompt/' + encodeURIComponent('imagen de ' + prompt) + '?width=768&height=768&nologo=true&seed=' + Math.floor(Math.random()*99999);
+  const div = document.createElement('div');
+  div.className = 'msg bot';
+  div.style.padding = '8px';
+  const img = document.createElement('img');
+  img.src = url; img.alt = prompt; img.style.cssText = 'max-width:100%; border-radius:12px; display:block;';
+  const caption = document.createElement('div');
+  caption.textContent = '🎨 ' + prompt;
+  caption.style.cssText = 'font-size:.8rem; color:#9fb8d8; margin-top:6px;';
+  img.onerror = () => { div.textContent = 'No pude generar la imagen. Probá con otra descripción.'; };
+  img.onload = () => { status('Tocá el micrófono y hablame'); };
+  div.appendChild(img); div.appendChild(caption);
+  chat.appendChild(div); chat.scrollTop = chat.scrollHeight;
+  speak('Acá tenés tu imagen de ' + prompt + '.');
+ }
+ // ============ LLM multi-proveedor ============
 const SYSTEM_PROMPT = 'Sos Frida, una asistente de voz en español latinoamericano, amable y clara. Respondé en 2 o 3 oraciones cortas, ideal para ser leída en voz alta.';
 
 async function askLLM(text){
@@ -340,7 +445,6 @@ async function askLLM(text){
       if(d.error) return addMsg('bot','Error de Gemini: ' + d.error.message);
       return addMsg('bot', d.candidates[0].content.parts[0].text.trim());
     }
-    // OpenAI-compatible (Groq, OpenRouter, custom)
     const url = prov === 'custom' ? (cfg.url || '').replace(/\/$/,'') + '/chat/completions' : PROVIDERS[prov].url;
     const r = await fetch(url,{
       method:'POST',
@@ -372,5 +476,4 @@ if('serviceWorker' in navigator){
 addMsg('bot','Hola, soy Frida, tu asistente. Tocá el micrófono y preguntame lo que quieras: el clima, el tránsito, tareas del colegio, o pedime cuentas de matemática.');
 </script>
 </body>
-  </html>
-  
+</html>
