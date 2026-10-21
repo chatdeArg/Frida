@@ -1,4 +1,4 @@
-const CACHE = 'frida-v4';
+const CACHE = 'frida-v7';
 const FILES = ['.', 'index.html', 'icon.svg'];
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES))));
 self.addEventListener('fetch', e => e.respondWith(
