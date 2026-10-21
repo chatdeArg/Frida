@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="es-419">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e1a">
+<title>Frida — Asistente de Voz</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body {
+    font-family:'Segoe UI', system-ui, sans-serif;
+    background:#0a0e1a; color:#e8f0ff; min-height:100vh;
+    display:flex; flex-direction:column;
+    background-image:radial-gradient(circle at 50% 30%, #16213e 0%, #0a0e1a 70%);
+  }
+  header { padding:16px; display:flex; align-items:center; justify-content:space-between; }
+  header h1 { font-size:1.1rem; letter-spacing:3px; color:#6ec6ff; font-weight:600; }
+  header button { background:none; border:1px solid #2a3a5f; color:#9fb8d8; border-radius:10px; padding:6px 12px; font-size:1rem; cursor:pointer; }
+  /* Reactor */
+  #reactor { width:150px; height:150px; margin:12px auto; position:relative; }
+  #reactor .core {
+    position:absolute; inset:35px; border-radius:50%;
+    background:radial-gradient(circle,#bfe9ff 0%,#38b6ff 45%,#0a5ea8 100%);
+    box-shadow:0 0 40px #38b6ff, 0 0 80px rgba(56,182,255,.4);
+    animation:pulse 3s ease-in-out infinite;
+    transition:box-shadow .3s;
+  }
+  #reactor.listening .core { box-shadow:0 0 60px #4dffdb, 0 0 120px rgba(77,255,219,.5); animation:pulse 1s ease-in-out infinite; }
+  #reactor .ring { position:absolute; inset:12px; border-radius:50%; border:2px solid rgba(56,182,255,.35); animation:spin 12s linear infinite; }
+  #reactor .ring::before { content:''; position:absolute; top:-4px; left:50%; width:8px; height:8px; background:#6ec6ff; border-radius:50%; box-shadow:0 0 10px #6ec6ff; }
+  @keyframes pulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.06)} }
+  @keyframes spin { to{transform:rotate(360deg)} }
+  /* Chat */
+  #chat { flex:1; overflow-y:auto; padding:12px 16px; display:flex; flex-direction:column; gap:10px; }
+  .msg { max-width:82%; padding:10px 14px; border-radius:16px; line-height:1.45; font-size:.95rem; animation:fade .3s; }
+  @keyframes fade { from{opacity:0; transform:translateY(8px)} to{opacity:1} }
+  .msg.user { align-self:flex-end; background:#1d3a6b; border-bottom-right-radius:4px; }
+  .msg.bot { align-self:flex-start; background:#14213d; border:1px solid #22355c; border-bottom-left-radius:4px; }
+  /* Controls */
+  #controls { padding:14px 16px calc(14px + env(safe-area-inset-bottom)); display:flex; gap:10px; }
+  #textInput {
+    flex:1; background:#111a30; border:1px solid #2a3a5f; border-radius:24px;
+    padding:12px 18px; color:#e8f0ff; font-size:1rem; outline:none;
+  }
+  #micBtn {
+    width:52px; height:52px; border-radius:50%; border:none; cursor:pointer;
+    background:linear-gradient(145deg,#38b6ff,#0a5ea8); font-size:1.4rem;
+    box-shadow:0 0 18px rgba(56,182,255,.5); transition:transform .15s;
+  }
+  #micBtn:active { transform:scale(.9); }
+  #status { text-align:center; font-size:.78rem; color:#5f7ba6; padding:0 16px 6px; min-height:1.2em; }
+  /* Modal */
+  #modal { display:none; position:fixed; inset:0; background:rgba(4,8,18,.85); z-index:10; padding:24px; overflow-y:auto; }
+  #modal.open { display:block; }
+  #modal .card { background:#111a30; border:1px solid #2a3a5f; border-radius:16px; padding:20px; max-width:480px; margin:20px auto; }
+  #modal h2 { color:#6ec6ff; font-size:1.05rem; margin-bottom:12px; }
+  #modal label { display:block; font-size:.85rem; color:#9fb8d8; margin:12px 0 4px; }
+  #modal select { width:100%; background:#0a0e1a; border:1px solid #2a3a5f; border-radius:10px; padding:10px 12px; color:#e8f0ff; font-size:.9rem; }
+  #modal input { width:100%; background:#0a0e1a; border:1px solid #2a3a5f; border-radius:10px; padding:10px 12px; color:#e8f0ff; font-size:.9rem; }
+  #modal p { font-size:.8rem; color:#5f7ba6; margin-top:4px; line-height:1.4; }
+  #modal .save { margin-top:18px; width:100%; padding:12px; border:none; border-radius:12px; background:#38b6ff; color:#04203a; font-weight:700; font-size:1rem; cursor:pointer; }
+</style>
+</head>
+<body>
+<header>
+  <h1>◉ FRIDA</h1>
+  <button onclick="document.getElementById('modal').classList.add('open')">⚙️ Config</button>
+</header>
+
+<div id="reactor"><div class="ring"></div><div class="core"></div></div>
+<div id="status">Tocá el micrófono y hablame</div>
+<div id="chat"></div>
+
+<div id="controls">
+  <input id="textInput" type="text" placeholder="Escribí o hablá..." autocomplete="off">
+  <button id="micBtn" title="Hablar">🎙️</button>
+</div>
+
+<div id="modal">
+  <div class="card">
+    <h2>Configuración de IA</h2>
+    <label>Proveedor de IA</label>
+    <select id="cfgProvider" onchange="updateModels()">
+      <option value="groq">Groq — gratis, súper rápido</option>
+      <option value="gemini">Google Gemini — gratis</option>
+      <option value="openrouter">OpenRouter — modelos gratis</option>
+      <option value="custom">Otro (compatible con OpenAI)</option>
+    </select>
+    <label>Clave de API</label>
+    <input id="cfgKey" type="password" placeholder="Pegá tu clave acá">
+    <p id="helpKey"></p>
+    <label>Modelo</label>
+    <select id="cfgModel"></select>
+    <div id="urlWrap" style="display:none">
+      <label>URL base (solo para "Otro")</label>
+      <input id="cfgUrl" type="text" placeholder="https://api.ejemplo.com/v1">
+    </div>
+    <p>Sin clave, uso mi base de conocimiento local: clima, tránsito, matemáticas y temas de colegio.</p>
+    <label>Clave de TomTom (opcional, para tránsito)</label>
+    <input id="cfgTomTom" type="password" placeholder="Gratis en developer.tomtom.com">
+    <button class="save" onclick="saveConfig()">Guardar</button>
+  </div>
+</div>
+
+<script>
+// ============ CONFIGURACIÓN ============
+const PROVIDERS = {
+  groq: {
+    url: 'https://api.groq.com/openai/v1/chat/completions',
+    help: 'Gratis en console.groq.com → API Keys',
+    models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant']
+  },
+  gemini: {
+    url: null,
+    help: 'Gratis en aistudio.google.com → Get API Key',
+    models: ['gemini-2.5-flash', 'gemini-2.0-flash']
+  },
+  openrouter: {
+    url: 'https://openrouter.ai/api/v1/chat/completions',
+    help: 'Gratis en openrouter.ai/keys — elegí modelos con :free',
+    models: ['meta-llama/llama-3.3-70b-instruct:free', 'deepseek/deepseek-r1:free', 'google/gemma-3-27b-it:free']
+  },
+  custom: {
+    url: '',
+    help: 'Cualquier API compatible con OpenAI (DeepSeek, Mistral, Ollama...)',
+    models: []
+  }
+};
+const cfg = {
+  provider: localStorage.getItem('frida_provider') || 'groq',
+  llmKey: localStorage.getItem('frida_key') || '',
+  model: localStorage.getItem('frida_model') || '',
+  url: localStorage.getItem('frida_url') || '',
+  tomtom: localStorage.getItem('frida_tomtom') || '',
+};
+document.getElementById('cfgProvider').value = cfg.provider;
+document.getElementById('cfgKey').value = cfg.llmKey;
+document.getElementById('cfgTomTom').value = cfg.tomtom;
+document.getElementById('cfgUrl').value = cfg.url;
+
+function updateModels(){
+  const prov = document.getElementById('cfgProvider').value;
+  const sel = document.getElementById('cfgModel');
+  sel.innerHTML = '';
+  PROVIDERS[prov].models.forEach(m=>{
+    const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o);
+  });
+  if(cfg.model && PROVIDERS[prov].models.includes(cfg.model)) sel.value = cfg.model;
+  document.getElementById('helpKey').textContent = PROVIDERS[prov].help;
+  document.getElementById('urlWrap').style.display = prov === 'custom' ? 'block' : 'none';
+}
+updateModels();
+
+function saveConfig(){
+  cfg.provider = document.getElementById('cfgProvider').value;
+  cfg.llmKey = document.getElementById('cfgKey').value.trim();
+  cfg.model = document.getElementById('cfgModel').value;
+  cfg.url = document.getElementById('cfgUrl').value.trim();
+  cfg.tomtom = document.getElementById('cfgTomTom').value.trim();
+  localStorage.setItem('frida_provider', cfg.provider);
+  localStorage.setItem('frida_key', cfg.llmKey);
+  localStorage.setItem('frida_model', cfg.model);
+  localStorage.setItem('frida_url', cfg.url);
+  localStorage.setItem('frida_tomtom', cfg.tomtom);
+  document.getElementById('modal').classList.remove('open');
+  addMsg('bot','Listo, configuración guardada.');
+}
+
+// ============ VOZ: SÍNTESIS ============
+let voice = null;
+function pickVoice(){
+  const vs = speechSynthesis.getVoices().filter(v=>v.lang.startsWith('es'));
+  voice = vs.find(v=>/google/i.test(v.name)) || vs[0] || null;
+}
+speechSynthesis.onvoiceschanged = pickVoice; pickVoice();
+function speak(text){
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'es-419'; if(voice) u.voice = voice;
+  u.rate = 1.05; speechSynthesis.speak(u);
+}
+
+// ============ VOZ: RECONOCIMIENTO ============
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, listening = false;
+if (SR){
+  rec = new SR();
+  rec.lang = 'es-419'; rec.interimResults = false; rec.maxAlternatives = 1;
+  rec.onresult = e => { handle(e.results[0][0].transcript); };
+  rec.onend = () => { setListening(false); };
+  rec.onerror = e => { setListening(false); status(e.error==='not-allowed'?'Permiso de micrófono denegado':'Error de micrófono'); };
+}
+const micBtn = document.getElementById('micBtn'), reactor = document.getElementById('reactor'), statusEl = document.getElementById('status');
+function status(t){ statusEl.textContent = t; }
+function setListening(on){
+  listening = on;
+  reactor.classList.toggle('listening', on);
+  micBtn.textContent = on ? '⏹️' : '🎙️';
+  status(on ? 'Escuchando...' : 'Tocá el micrófono y hablame');
+}
+micBtn.onclick = () => {
+  if(!rec){ status('Tu navegador no soporta reconocimiento de voz. Usá Chrome.'); return; }
+  if(listening){ rec.stop(); return; }
+  speechSynthesis.cancel(); rec.start(); setListening(true);
+};
+
+// ============ CHAT UI ============
+const chat = document.getElementById('chat');
+function addMsg(who, text){
+  const div = document.createElement('div');
+  div.className = 'msg ' + who;
+  div.textContent = text;
+  chat.appendChild(div); chat.scrollTop = chat.scrollHeight;
+  if(who==='bot') speak(text);
+}
+document.getElementById('textInput').addEventListener('keydown', e=>{
+  if(e.key==='Enter' && e.target.value.trim()){ handle(e.target.value.trim()); e.target.value=''; }
+});
+
+// ============ MOTOR DE RESPUESTAS ============
+const norm = s => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+
+const BASE = {
+  'fotosintesis': 'La fotosíntesis es el proceso por el cual las plantas convierten luz solar, agua y dióxido de carbono en glucosa y oxígeno. Ocurre en los cloroplastos, gracias a la clorofila. La ecuación es: 6 CO2 más 6 H2O, con luz, producen C6 H12 O6 más 6 O2.',
+  'pitagoras': 'El teorema de Pitágoras dice que en un triángulo rectángulo, el cuadrado de la hipotenusa es igual a la suma de los cuadrados de los catetos: a cuadrado más b cuadrado, igual a c cuadrado. Por ejemplo, si los catetos son 3 y 4, la hipotenusa es 5.',
+  'celula': 'La célula es la unidad básica de la vida. Tiene membrana, citoplasma y material genético. Las animales tienen núcleo definido, son eucariotas; las bacterias no, son procariotas.',
+  'sistema solar': 'El sistema solar tiene 8 planetas: Mercurio, Venus, Tierra, Marte, Júpiter, Saturno, Urano y Neptuno. El sol contiene el 99.8 por ciento de toda la masa del sistema.',
+  'segunda guerra mundial': 'Fue de 1939 a 1945. Empezó con la invasión de Polonia por Alemania. Terminó en Europa en mayo de 1945 y en el Pacífico en agosto con las bombas atómicas en Japón.',
+  'ciclo del agua': 'Es el recorrido del agua: evapora del mar, se condensa formando nubes, precipita como lluvia o nieve, y vuelve a ríos y mares. Se repite constantemente.',
+  'capas de la tierra': 'La Tierra tiene corteza, manto y núcleo. El núcleo externo es líquido y el interno sólido, de hierro y níquel. La corteza es donde vivimos.',
+  'mitocondria': 'La mitocondria es la encargada de producir energía en la célula: convierte nutrientes en ATP. Por eso se la llama la central energética de la célula.',
+  'que hora es': null, 'hora': null,
+};
+
+async function handle(raw){
+  const text = raw.trim();
+  if(!text) return;
+  addMsg('user', text);
+  const q = norm(text);
+
+  // Nombre
+  if(/(como te llamas|tu nombre|quien sos)/.test(q))
+    return addMsg('bot','Me llamo Frida, tu asistente personal.');
+
+  // Saludos
+  if(/^(hola|buenas|hey|buenos dias|buenas tardes|buenas noches)/.test(q))
+    return addMsg('bot','Hola. Soy Frida. Preguntame sobre tareas del colegio, el clima, tránsito, o pedime una cuenta de matemática.');
+
+  // Hora
+  if(BASE[q] === null || /\bque hora\b/.test(q))
+    return addMsg('bot','Son las ' + new Date().toLocaleTimeString('es-419',{hour:'numeric',minute:'2-digit'}) + '.');
+
+  // Mate: "cuánto es 12*8+4" o "calcula ..."
+  const calcMatch = q.match(/([\d][\d\s\+\-\*\/\(\)\.,]*[\d]|\d)/);
+  if(/(cuanto es|cuánto es|calcula|cuanto da|suma|resta|multiplica|divide)/.test(q) && calcMatch){
+    const expr = calcMatch[1].replace(',', '.').replace(/[^\d\+\-\*\/\(\)\. ]/g,'').trim();
+    if(/^[\d\+\-\*\/\(\)\. ]+$/.test(expr) && /\d/.test(expr)){
+      try {
+        const r = Function('"use strict"; return (' + expr + ')')();
+        return addMsg('bot', expr + ' es igual a ' + (Math.round(r*10000)/10000) + '.');
+      } catch(e){}
+    }
+  }
+
+  // Clima (open-meteo, gratis, sin clave)
+  if(/\b(clima|tiempo|temperatura|lluvia|weather)\b/.test(q)) return weather();
+
+  // Tránsito
+  if(/\b(transito|trafico|accidente|camino|ruta)\b/.test(q)) return traffic();
+
+  // Chiste
+  if(/chiste|broma/.test(q)){
+    const chistes = ['¿Por qué el libro de matemáticas está triste? Porque tiene demasiados problemas.',
+      '¿Qué le dice un jardinero a otro? Nos vemos cuando podamos.',
+      '¿Por qué no pelea un libro? Porque prefiere evitar los conflictos.'];
+    return addMsg('bot', chistes[Math.floor(Math.random()*chistes.length)]);
+  }
+
+  // Base de conocimiento local
+  for(const k in BASE){
+    if(BASE[k] && q.includes(k)) return addMsg('bot', BASE[k]);
+  }
+  if(/gracias/.test(q)) return addMsg('bot','De nada. Estoy para ayudarte.');
+
+  // Fallback: LLM si hay clave
+  if(cfg.llmKey) return askLLM(text);
+  addMsg('bot','Todavía no sé sobre ese tema. Configurá una IA gratis en ⚙️ (Groq o Gemini) para que responda cualquier cosa. También puedo decirte el clima, el tránsito, y resolver cuentas de matemática.');
+}
+
+// ============ CLIMA (Open-Meteo, gratis) ============
+function getPos(){ return new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{timeout:8000})); }
+async function weather(){
+  status('Buscando tu ubicación...');
+  try{
+    const p = await getPos();
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${p.coords.latitude.toFixed(4)}&longitude=${p.coords.longitude.toFixed(4)}&current_weather=true&timezone=auto`;
+    const r = await fetch(url); const d = await r.json();
+    const w = d.current_weather;
+    const codes = {0:'despejado',1:'mayormente despejado',2:'parcialmente nublado',3:'nublado',45:'con niebla',48:'con niebla',51:'con llovizna',53:'con llovizna',55:'con llovizna',61:'con lluvia leve',63:'con lluvia',65:'con lluvia fuerte',71:'con nieve leve',73:'con nieve',75:'con nieve fuerte',80:'con chaparrones',81:'con chaparrones',82:'con chaparrones fuertes',95:'con tormenta'};
+    const desc = codes[w.weathercode] || 'variable';
+    addMsg('bot', `Ahora hay ${Math.round(w.temperature)} grados, ${desc}, y el viento va a ${Math.round(w.windspeed)} kilómetros por hora.`);
+  }catch(e){
+    addMsg('bot','No pude obtener tu ubicación. Activá el GPS y el permiso de ubicación para decirte el clima.');
+  }
+}
+
+// ============ TRÁNSITO (TomTom, requiere clave gratis) ============
+async function traffic(){
+  if(!cfg.tomtom) return addMsg('bot','Para el tránsito necesito una clave de TomTom, es gratis: entra a developer.tomtom.com, crea una cuenta y pegala en Configuración.');
+  status('Consultando tránsito...');
+  try{
+    const p = await getPos();
+    const lat=p.coords.latitude, lon=p.coords.longitude, d=0.05;
+    const bbox = `${lon-d}%2C${lat-d}%2C${lon+d}%2C${lat+d}`;
+    const url = `https://api.tomtom.com/traffic/services/5/incidentDetails?key=${cfg.tomtom}&bbox=${bbox}&fields={incidents{type,geometry{type,coordinates},properties{iconCategory,events{description,length,delay}}}}&language=es-419`;
+    const r = await fetch(url); const dta = await r.json();
+    const inc = (dta.incidents||[]).filter(i=>i.properties && i.properties.events && i.properties.events.length);
+    if(!inc.length) return addMsg('bot','No hay incidentes de tránsito reportados cerca de tu ubicación. El camino está despejado.');
+    let totalDelay = 0, ejemplos = [];
+    inc.forEach(i=> i.properties.events.forEach(ev=>{ totalDelay += ev.delay||0; if(ev.description && ejemplos.length<2) ejemplos.push(ev.description); }));
+    addMsg('bot', `Hay ${inc.length} incidente${inc.length>1?'s':''} cerca. Demora total estimada: ${Math.round(totalDelay/60)} minutos. ${ejemplos[0]?'Por ejemplo: '+ejemplos[0]:''}`);
+  }catch(e){ addMsg('bot','No pude consultar el tránsito. Verificá tu clave de TomTom y el GPS.'); }
+}
+
+// ============ LLM multi-proveedor ============
+const SYSTEM_PROMPT = 'Sos Frida, una asistente de voz en español latinoamericano, amable y clara. Respondé en 2 o 3 oraciones cortas, ideal para ser leída en voz alta.';
+
+async function askLLM(text){
+  status('Pensando...');
+  const prov = cfg.provider;
+  try{
+    if(prov === 'gemini'){
+      const model = cfg.model || PROVIDERS.gemini.models[0];
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${cfg.llmKey}`,{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ contents:[{parts:[{text: SYSTEM_PROMPT + '\n\nPregunta: ' + text}]}] })
+      });
+      const d = await r.json();
+      if(d.error) return addMsg('bot','Error de Gemini: ' + d.error.message);
+      return addMsg('bot', d.candidates[0].content.parts[0].text.trim());
+    }
+    // OpenAI-compatible (Groq, OpenRouter, custom)
+    const url = prov === 'custom' ? (cfg.url || '').replace(/\/$/,'') + '/chat/completions' : PROVIDERS[prov].url;
+    const r = await fetch(url,{
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+cfg.llmKey },
+      body: JSON.stringify({ model: cfg.model || PROVIDERS[prov].models[0], messages:[
+        {role:'system', content: SYSTEM_PROMPT},
+        {role:'user', content:text}
+      ], max_tokens:250 })
+    });
+    const d = await r.json();
+    if(d.error) return addMsg('bot','Error: ' + (d.error.message || JSON.stringify(d.error)));
+    addMsg('bot', d.choices[0].message.content.trim());
+  }catch(e){ addMsg('bot','Error de conexión con la IA. Revisá tu internet o la clave.'); }
+}
+
+// ============ PWA ============
+const manifest = {
+  name:'Frida — Asistente de Voz', short_name:'Frida', start_url:'.', display:'standalone',
+  background_color:'#0a0e1a', theme_color:'#0a0e1a', lang:'es-419',
+  icons:[{src:'icon.svg', sizes:'any', type:'image/svg+xml', purpose:'any'}]
+};
+const mLink = document.createElement('link');
+mLink.rel='manifest';
+mLink.href = URL.createObjectURL(new Blob([JSON.stringify(manifest)],{type:'application/json'}));
+document.head.appendChild(mLink);
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
+}
+addMsg('bot','Hola, soy Frida, tu asistente. Tocá el micrófono y preguntame lo que quieras: el clima, el tránsito, tareas del colegio, o pedime cuentas de matemática.');
+</script>
+</body>
+  </html>
+  
